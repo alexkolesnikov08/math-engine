@@ -96,6 +96,4 @@ All contributions should adhere to **PEP 8** and the **Google Python Style Gui
 
 The code in this repository is released under the MIT License.
 
---- 
-
-*Generated on 2026‑05‑01 by the Math equation solver engine.*
+---

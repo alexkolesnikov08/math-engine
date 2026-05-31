@@ -1,4 +1,3 @@
-# Math/engine.py
 """
 Engine module for solving mathematical equations expressed in LaTeX.
 
@@ -29,8 +28,11 @@ from sympy import Eq, Symbol
 from sympy.parsing.latex import parse_latex
 from sympy.printing.latex import latex
 
-
+# ---------------------------------------------------------------------------
 # Helper utilities
+# ---------------------------------------------------------------------------
+
+
 def _split_into_equations(latex: str) -> List[str]:
     """Split a LaTeX source that may contain several equations.
 
@@ -151,7 +153,11 @@ def _numeric_approx(solution: sympy.Expr) -> sympy.Expr:
     return solution.evalf()
 
 
+# ---------------------------------------------------------------------------
 # Public API
+# ---------------------------------------------------------------------------
+
+
 def generate_solution_steps(latex_input: str) -> List[str]:
     """Generate a LaTeX‑formatted solution chain for the given input.
 
@@ -214,7 +220,7 @@ def generate_solution_steps(latex_input: str) -> List[str]:
                 simplified.append(Eq(lhs, rhs))
             else:
                 simplified.append(sympy.simplify(eq))
-        simpl_latex = r"\\".join(latex(s) for s in simplified)
+        simpl_latex = r"\\ ".join(latex(s) for s in simplified)
         steps.append(simpl_latex)
 
         # 4. Solve.
@@ -223,7 +229,6 @@ def generate_solution_steps(latex_input: str) -> List[str]:
             symbols, solutions = _solve_single(simplified[0])
         else:
             # System of equations – solve simultaneously.
-            # Use ``sympy.solve`` with a list of equations.
             eq_list = [e if isinstance(e, Eq) else Eq(e, 0) for e in simplified]
             symbols = sorted(
                 {s for eq in eq_list for s in eq.free_symbols}, key=lambda x: str(x)
@@ -231,19 +236,15 @@ def generate_solution_steps(latex_input: str) -> List[str]:
             solutions_raw = sympy.solve(eq_list, symbols, dict=True)
             if not solutions_raw:
                 raise ValueError("System could not be solved symbolically.")
-            # ``solutions_raw`` is a list of dicts; collect all possible values.
             solutions = []
             for s in symbols:
                 vals = [sol_dict.get(s) for sol_dict in solutions_raw]
-                # Keep a list if there are several distinct solutions, otherwise a scalar.
                 solutions.append(vals if len(vals) > 1 else vals[0])
 
         # 5. Format symbolic solutions.
         symbolic_parts = []
         for s, sol in zip(symbols, solutions):
-            # ``sol`` can be a list of multiple solutions for the same symbol.
             if isinstance(sol, (list, tuple)):
-                # Create a separate part for each solution.
                 for single in sol:
                     symbolic_parts.append(f"{latex(s)} = {latex(single)}")
             else:
@@ -253,7 +254,6 @@ def generate_solution_steps(latex_input: str) -> List[str]:
         # 6. Numerical approximations.
         numeric_parts = []
         for s, sol in zip(symbols, solutions):
-            # ``sol`` may be a single expression or a list/tuple of expressions.
             if isinstance(sol, (list, tuple)):
                 for single in sol:
                     numeric_parts.append(
