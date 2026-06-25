@@ -1,6 +1,6 @@
 # Math Equation Solver
 
-A compact Python utility that parses mathematical equations written in LaTeX, solves them both symbolically and numerically, and returns a step‑by‑step solution in LaTeX format.
+A compact Python utility that parses mathematical equations written in LaTeX, solves them both symbolically and numerically, and returns a step‑by‑step solution as LaTeX fragments.
 
 ## Features
 
@@ -12,52 +12,41 @@ A compact Python utility that parses mathematical equations written in LaTeX, so
 
 ## Installation
 
-1. **Clone the repository** (or copy the files into your project):
+1. **Clone the repository**:
 
    ```bash
    git clone https://github.com/alexkolesnikov08/Math
    cd Math
    ```
 
-2. **Install the required dependencies** for the interpreter you plan to use. The
-   project provides a `requirements.txt` that fixes the versions required by
-   the LaTeX parser (`sympy≥1.12` and `antlr4-python3-runtime==4.11`).
+2. **Install dependencies**:
 
    ```bash
-   # Homebrew‑installed Python 3.11 on macOS
-   /opt/homebrew/bin/python3.11 -m pip install --upgrade pip
-   /opt/homebrew/bin/python3.11 -m pip install -r requirements.txt
+   pip install -r requirements.txt
    ```
 
-   If you prefer an isolated environment, create a virtualenv **with the same
-   interpreter** and install from `requirements.txt` inside it.
+   > Requires Python 3.10+. If using a Homebrew‑installed Python, replace `pip` with the full path (e.g. `/opt/homebrew/bin/python3.11 -m pip install -r requirements.txt`).
 
-3. **Make the CLI executable (optional).** `main.py` now starts with a shebang
-   that points to the interpreter above, so you can run it directly:
+3. **Make the CLI executable (optional)**:
 
    ```bash
    chmod +x main.py
    ./main.py "x^2 - 5x + 6 = 0"
    ```
 
-   > The code works with Python 3.10+ but the shebang guarantees it runs with the
-   > interpreter you installed the dependencies for.
-
 ## Usage
 
-### As a CLI tool
-
-Run the solver directly via the module entry point:
+### CLI
 
 ```bash
 # Pass the equation as an argument
-python -m Math.main "x^2 - 5x + 6 = 0"
+python -m main "x^2 - 5x + 6 = 0"
 
-# Or pipe the equation via stdin
-echo "x^2 - 5x + 6 = 0" | python -m Math.main
+# Or pipe via stdin
+echo "x^2 - 5x + 6 = 0" | python -m main
 ```
 
-The program prints each solution step on a separate line, e.g.:
+Output (each line is a LaTeX fragment):
 
 ```
 x^2 - 5x + 6 = 0
@@ -66,9 +55,7 @@ x = 2,\; x = 3
 x \approx 2.00000000000000,\; x \approx 3.00000000000000
 ```
 
-### As a library
-
-Import the engine in your own Python code:
+### Library
 
 ```python
 from engine import generate_solution_steps
@@ -80,28 +67,31 @@ for step in steps:
     print(step)
 ```
 
-The returned `steps` list contains LaTeX strings representing each stage of the solution.
+Each returned string is a LaTeX math fragment. Wrap it in `$$...$$` (display) or `\\(...\\)` (inline) before rendering. See [`documentation.md`](documentation.md) for the full API reference.
+
+### Shebang
+
+`main.py` uses the portable shebang `#!/usr/bin/env python3`. If your system has multiple Python versions, use `python main.py` or override the interpreter explicitly.
 
 ## Project Structure
 
 ```
 Math/
-├── engine.py      # Core solving logic (importable)
-├── main.py        # CLI entry point
-├── README.md      # You are reading it now
-└── documentation.md  # Detailed engine documentation
+├── engine.py         # Core solving logic (importable)
+├── main.py           # CLI entry point
+├── README.md         # This file
+├── documentation.md  # Full API reference
+├── requirements.txt  # Python dependencies
+└── LICENSE           # MIT License
 ```
 
 ## Contributing
 
 1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/my‑feature`).
+2. Create a feature branch (`git checkout -b feature/my-feature`).
 3. Ensure code follows **Google Python Style Guide** and passes linting.
 4. Submit a pull request with a clear description of the changes.
 
 ## License
 
-This project is released under the MIT License. Feel free to use, modify, and distribute it.
-
----  
-*Generated on 2026‑05‑01 by the Math Equation Solver project.*
+MIT License. See [LICENSE](LICENSE) for details.

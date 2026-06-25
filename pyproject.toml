@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy._Backend"
+
+[project]
+name = "math-equation-solver"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "sympy>=1.12",
+    "antlr4-python3-runtime>=4.11,<4.14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.3",
+]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "BLE", "B", "A", "COM", "C4", "DTZ", "EM", "ERA", "EXE", "FA", "ICN", "G", "INP", "ISC", "NPY", "PD", "PGH", "PIE", "PL", "PTH", "PYI", "Q", "RET", "RSE", "RUF", "SLF", "SLOT", "T10", "T20", "TCH", "TID", "TRY", "UP", "YTT"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that run the CLI as a subprocess",
+]

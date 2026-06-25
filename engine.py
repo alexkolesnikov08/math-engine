@@ -33,7 +33,7 @@ from sympy.printing.latex import latex
 # ---------------------------------------------------------------------------
 
 
-def _split_into_equations(latex: str) -> List[str]:
+def _split_into_equations(latex_str: str) -> List[str]:
     """Split a LaTeX source that may contain several equations.
 
     The function recognises the following separators:
@@ -45,13 +45,13 @@ def _split_into_equations(latex: str) -> List[str]:
     Empty fragments are discarded.
 
     Args:
-        latex: Raw LaTeX string possibly containing several equations.
+        latex_str: Raw LaTeX string possibly containing several equations.
 
     Returns:
         A list of LaTeX strings, each representing a single equation.
     """
     # Normalise line endings and split.
-    parts = re.split(r"(?:\\\\|;|\n)", latex)
+    parts = re.split(r"(?:\\\\|;|\n)", latex_str)
     return [p.strip() for p in parts if p.strip()]
 
 
@@ -73,7 +73,12 @@ def _latex_to_sympy(eq_latex: str) -> sympy.Basic:
     # split at the first ``=`` that is not inside braces.
     depth = 0
     split_index = -1
-    for i, ch in enumerate(eq_latex):
+    i = 0
+    while i < len(eq_latex):
+        ch = eq_latex[i]
+        if ch == "\\" and i + 1 < len(eq_latex) and eq_latex[i + 1] in "{}":
+            i += 2
+            continue
         if ch == "{":
             depth += 1
         elif ch == "}":
@@ -81,6 +86,7 @@ def _latex_to_sympy(eq_latex: str) -> sympy.Basic:
         elif ch == "=" and depth == 0:
             split_index = i
             break
+        i += 1
 
     if split_index != -1:
         left = eq_latex[:split_index].strip()
@@ -126,13 +132,7 @@ def _solve_single(
     # ``dict=True`` forces the dictionary form for multi‑variable cases.
     sol = sympy.solve(eq, symbols, dict=True)
     if not sol:
-        # Fall back to solving each symbol individually if the system is
-        # under‑determined.
-        solutions: List[Union[sympy.Expr, List[sympy.Expr]]] = []
-        for s in symbols:
-            single = sympy.solve(eq, s)
-            solutions.append(single)
-        return cast(List[Symbol], symbols), solutions
+        raise ValueError("Equation could not be solved symbolically.")
 
     # Collect all solutions for each symbol from the list of dictionaries.
     # ``sol`` is a list of dicts, each dict representing one possible solution.
@@ -148,9 +148,12 @@ def _solve_single(
     return cast(List[Symbol], symbols), collected
 
 
-def _numeric_approx(solution: sympy.Expr) -> sympy.Expr:
+def _numeric_approx(solution: sympy.Basic, precision: int = 3) -> sympy.Basic:
     """Return a numerical approximation (``evalf``) of ``solution``."""
-    return solution.evalf()
+    try:
+        return solution.evalf(precision)
+    except Exception:
+        return solution
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +268,7 @@ def generate_solution_steps(latex_input: str) -> List[str]:
                 )
         steps.append(r",\; ".join(numeric_parts))
 
-    except Exception as exc:  # pylint: disable=broad-except
-        # Return a user‑friendly LaTeX error block.
+    except (ValueError, sympy.SympifyError) as exc:
         error_msg = f"\\text{{Error:}} \\text{{{str(exc)}}}"
         steps = [error_msg]
 
