@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from linalg import try_linalg_solve
+from linalg import _parse_cell, try_linalg_solve
 
 
 def _clean(s: str) -> str:
@@ -95,3 +95,24 @@ def test_nonlinear_system_returns_none():
 def test_non_matrix_returns_none():
     assert try_linalg_solve(r"x^2 - 5x + 6 = 0") is None
     assert try_linalg_solve("hello world") is None
+
+
+def test_parse_cell_rejects_code_execution(tmp_path):
+    """Malicious cell must raise ValueError without executing anything."""
+    marker = tmp_path / "pwned"
+    payload = f"__import__('os').system('touch {marker}')"
+    with pytest.raises(ValueError):
+        _parse_cell(payload)
+    assert not marker.exists()
+
+
+def test_matrix_with_malicious_cell_raises_without_execution(tmp_path):
+    """Matrix embedding a payload must raise ValueError, not execute it."""
+    marker = tmp_path / "pwned_matrix"
+    payload = f"__import__('os').system('touch {marker}')"
+    latex_input = (
+        r"\begin{pmatrix}1 & 2 \\ 3 & " + payload + r"\end{pmatrix}"
+    )
+    with pytest.raises(ValueError):
+        try_linalg_solve(latex_input)
+    assert not marker.exists()

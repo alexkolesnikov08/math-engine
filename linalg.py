@@ -38,19 +38,22 @@ _CASES_RE = re.compile(r"\\begin\{cases\}(.*?)\\end\{cases\}", re.DOTALL)
 
 
 def _parse_cell(cell: str) -> sympy.Basic:
-    """Parse one matrix cell with LaTeX parser, falling back to sympify."""
+    """Parse one matrix cell using the LaTeX parser only.
+
+    There is intentionally no ``sympy.sympify`` fallback: ``sympify``
+    evaluates arbitrary Python code (e.g.
+    ``__import__('os').system(...)``), which is a remote code execution
+    vulnerability. Unparseable cells raise ``ValueError`` instead.
+    """
     text = cell.strip()
     if not text:
         raise ValueError("Empty matrix cell.")
     try:
         result = parse_latex(text)
-    except Exception:
-        result = None
+    except Exception as exc:
+        raise ValueError(f"Cannot parse matrix cell: {text!r}") from exc
     if result is None:
-        try:
-            result = sympy.sympify(text)
-        except Exception as exc:
-            raise ValueError(f"Cannot parse matrix cell: {text!r}") from exc
+        raise ValueError(f"Cannot parse matrix cell: {text!r}")
     return result
 
 
