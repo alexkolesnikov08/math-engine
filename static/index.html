@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>math-engine preview</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+    textarea { width: 100%; min-height: 72px; font-family: monospace; }
+    #steps .step { border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; margin: 0.75rem 0; }
+    #steps .step h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
+    #error { color: #a00; white-space: pre-wrap; }
+    .row { display: flex; gap: 0.5rem; align-items: center; margin: 0.5rem 0; }
+  </style>
+</head>
+<body>
+  <h1>math-engine preview</h1>
+  <label for="latex">LaTeX equation:</label>
+  <textarea id="latex">x^2 - 5x + 6 = 0</textarea>
+  <div class="row">
+    <label for="precision">Precision:</label>
+    <input id="precision" type="number" value="15" min="1" max="50" />
+    <button id="solve">Solve</button>
+  </div>
+  <div id="error"></div>
+  <div id="steps"></div>
+
+  <script>
+    async function solve() {
+      const latex = document.getElementById('latex').value;
+      const precision = parseInt(document.getElementById('precision').value, 10) || 15;
+      const errorBox = document.getElementById('error');
+      const stepsBox = document.getElementById('steps');
+      errorBox.textContent = '';
+      stepsBox.innerHTML = '<p>Solving…</p>';
+      let data;
+      try {
+        const resp = await fetch('/solve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ latex, precision }),
+        });
+        data = await resp.json();
+        if (!resp.ok) {
+          errorBox.textContent = (data && data.detail) ? JSON.stringify(data.detail) : ('HTTP ' + resp.status);
+          stepsBox.innerHTML = '';
+          return;
+        }
+      } catch (e) {
+        errorBox.textContent = 'Request failed: ' + e;
+        stepsBox.innerHTML = '';
+        return;
+      }
+      stepsBox.innerHTML = '';
+      if (data.error) {
+        errorBox.textContent = data.error;
+      }
+      for (const step of (data.steps || [])) {
+        const wrap = document.createElement('div');
+        wrap.className = 'step';
+        const title = document.createElement('h3');
+        title.textContent = step.title + ' (' + step.kind + ')';
+        const math = document.createElement('div');
+        math.className = 'math';
+        math.textContent = '$$' + step.latex + '$$';
+        wrap.appendChild(title);
+        wrap.appendChild(math);
+        stepsBox.appendChild(wrap);
+      }
+      if (window.renderMathInElement) {
+        renderMathInElement(stepsBox, {
+          delimiters: [
+            { left: '$$', right: '$$', display: true },
+            { left: '\\(', right: '\\)', display: false },
+          ],
+          throwOnError: false,
+        });
+      } else {
+        // Fallback: direct KaTeX rendering if auto-render is unavailable.
+        stepsBox.querySelectorAll('.math').forEach((el) => {
+          const src = el.textContent.replace(/^\$\$|\$\$$/g, '');
+          try { window.katex.render(src, el, { displayMode: true, throwOnError: false }); }
+          catch (e) { /* keep raw text */ }
+        });
+      }
+    }
+    document.getElementById('solve').addEventListener('click', solve);
+    window.addEventListener('load', () => {
+      if (window.katex) { /* KaTeX ready */ }
+    });
+  </script>
+</body>
+</html>
