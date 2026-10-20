@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends._legacy._Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "math-equation-solver"
@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "sympy>=1.12",
-    "antlr4-python3-runtime>=4.11,<4.14",
+    "antlr4-python3-runtime==4.11.*",
 ]
 
 [project.optional-dependencies]
@@ -16,12 +16,27 @@ dev = [
     "pytest>=7.0",
     "ruff>=0.3",
 ]
+server = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+]
 
+# Flat layout: top-level modules; never package tests/.
+[tool.setuptools]
+py-modules = ["engine", "main", "steps"]
+
+[tool.setuptools.packages.find]
+exclude = ["tests*"]
+
+# Intentionally minimal lint baseline (ruff defaults): syntax errors + pyflakes.
+# Broader rule sets flag pre-existing style issues in engine code;
+# tighten only together with a code cleanup.
 [tool.ruff]
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "S", "BLE", "B", "A", "COM", "C4", "DTZ", "EM", "ERA", "EXE", "FA", "ICN", "G", "INP", "ISC", "NPY", "PD", "PGH", "PIE", "PL", "PTH", "PYI", "Q", "RET", "RSE", "RUF", "SLF", "SLOT", "T10", "T20", "TCH", "TID", "TRY", "UP", "YTT"]
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

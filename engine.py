@@ -273,3 +273,15 @@ def generate_solution_steps(latex_input: str) -> List[str]:
         steps = [error_msg]
 
     return steps
+
+
+# ---------------------------------------------------------------------------
+# Structured steps re-export (see steps.py; lazy import there avoids a cycle).
+# ---------------------------------------------------------------------------
+
+try:  # pragma: no cover - thin re-export, logic tested via steps.py
+    from steps import Step, generate_steps_structured, steps_to_json  # noqa: E402,F401
+
+    __all__ = ["generate_solution_steps", "generate_steps_structured", "Step", "steps_to_json"]
+except ImportError:  # pragma: no cover - steps.py missing
+    __all__ = ["generate_solution_steps"]

@@ -1,2 +1,4 @@
-sympy>=1.12
-antlr4-python3-runtime>=4.11,<4.14
+# Single source of truth lives in pyproject.toml.
+# This file only re-exports the project so that
+# `pip install -r requirements.txt` keeps working.
+-e .

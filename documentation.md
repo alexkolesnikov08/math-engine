@@ -131,3 +131,26 @@ All contributions should adhere to **PEP 8** and the **Google Python Style Guide
 ## License
 
 MIT License. See [`LICENSE`](LICENSE) for details.
+
+---
+
+## Structured Steps API
+
+The `steps.py` module wraps `generate_solution_steps` with typed metadata
+for API/UI/CLI consumers. Legacy `List[str]` behaviour is unchanged.
+
+```python
+from steps import generate_steps_structured, steps_to_json
+
+steps = generate_steps_structured(r"x^2 - 5x + 6 = 0")
+for s in steps:
+    print(s.kind, "|", s.title, "|", s.latex)
+
+print(steps_to_json(steps))
+```
+
+Success returns 4 `Step(kind, title, latex)` items in order
+`input → simplified → symbolic → numeric`; failure returns one
+`Step(kind="error", ...)`. `steps_to_json` converts steps to plain
+dicts (`kind`/`title`/`latex`) for JSON serialization.
+
