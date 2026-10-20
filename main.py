@@ -22,50 +22,39 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
 from steps import Step, generate_steps_structured, steps_to_json
+from precision import apply_precision
 
 try:
     from step_builders import build_derivation_steps
 except ImportError:
+    build_derivation_steps = None  # type: ignore[assignment]
+except Exception as exc:  # noqa: BLE001 - optional module; warn instead of silent skip
+    sys.stderr.write(
+        f"Warning: optional module step_builders failed to import: {exc}\n"
+    )
     build_derivation_steps = None  # type: ignore[assignment]
 
 try:
     from extensions import try_extended_solve as _extensions_try_extended
 except ImportError:
     _extensions_try_extended = None  # type: ignore[assignment]
+except Exception as exc:  # noqa: BLE001 - optional module; warn instead of silent skip
+    sys.stderr.write(
+        f"Warning: optional module extensions failed to import: {exc}\n"
+    )
+    _extensions_try_extended = None  # type: ignore[assignment]
 
 try:
     from linalg import try_linalg_solve as _linalg_try_linalg
 except ImportError:
     _linalg_try_linalg = None  # type: ignore[assignment]
-
-try:
-    from engine import (
-        _latex_to_sympy,
-        _numeric_approx,
-        _solve_single,
-        _split_into_equations,
-    )
-except ImportError:
-    _latex_to_sympy = None  # type: ignore[assignment]
-    _numeric_approx = None  # type: ignore[assignment]
-    _solve_single = None  # type: ignore[assignment]
-    _split_into_equations = None  # type: ignore[assignment]
-
-try:
-    from sympy import Eq
-    from sympy import simplify as _sympy_simplify
-    from sympy.parsing.latex import parse_latex as _parse_latex
-    from sympy.printing.latex import latex as _sympy_latex
-except ImportError:
-    Eq = None  # type: ignore[assignment]
-    _sympy_simplify = None  # type: ignore[assignment]
-    _parse_latex = None  # type: ignore[assignment]
-    _sympy_latex = None  # type: ignore[assignment]
+except Exception as exc:  # noqa: BLE001 - optional module; warn instead of silent skip
+    sys.stderr.write(f"Warning: optional module linalg failed to import: {exc}\n")
+    _linalg_try_linalg = None  # type: ignore[assignment]
 
 _TITLES_FALLBACK: dict[str, str] = {
     "input": "Input",
@@ -74,6 +63,17 @@ _TITLES_FALLBACK: dict[str, str] = {
     "numeric": "Numerical approximation",
     "error": "Error",
 }
+
+
+def _positive_int(value: str) -> int:
+    """Parse a CLI integer that must be >= 1 (argparse exits 2 otherwise)."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid integer value: {value!r}")
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("--precision must be >= 1")
+    return parsed
 
 
 def _parse_arguments() -> argparse.Namespace:
@@ -97,9 +97,16 @@ def _parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--precision",
-        type=int,
+        type=_positive_int,
         default=15,
-        help="Number of significant digits for numerical approximations. Default: 15.",
+        help="Number of significant digits for numerical approximations. Must be >= 1. Default: 15.",
+    )
+    parser.add_argument(
+        "--full-steps",
+        action="store_true",
+        help="Show full derivation steps. Without it, json/latex/text "
+        "outputs are filtered to the legacy 4 steps "
+        "(input/simplified/symbolic/numeric).",
     )
     parser.add_argument(
         "--only-solution",
@@ -159,33 +166,57 @@ def _normalize_extended_result(result: object) -> list[Step] | None:
     return None
 
 
+def _error_step(message: str) -> Step:
+    """Build an error step owning a builder's ValueError message."""
+    text = message.strip() or "Unknown error."
+    return Step(
+        kind="error",
+        title=_TITLES_FALLBACK["error"],
+        latex=rf"\text{{Error:}} \text{{{text}}}",
+    )
+
+
+# Explicit per-builder call contracts: build_derivation_steps takes only
+# (latex) by contract, the rest accept (latex, precision). No try/except
+# TypeError probing — the arity is fixed here.
+def _candidate_builders() -> list[tuple[object, bool]]:
+    """Return (builder, takes_precision) pairs in dispatch order."""
+    builders: list[tuple[object, bool]] = []
+    if build_derivation_steps is not None:
+        builders.append((build_derivation_steps, False))
+    if _extensions_try_extended is not None:
+        builders.append((_extensions_try_extended, True))
+    if _linalg_try_linalg is not None:
+        builders.append((_linalg_try_linalg, True))
+    return builders
+
+
 def _get_structured_steps(latex_input: str, precision: int = 15) -> list[Step]:
     """Return structured steps, preferring future extended builders.
 
-    Each candidate builder is tried in order; a builder returning None
-    (cannot handle the input) falls through to the next one. The legacy
+    Each candidate builder is tried in order. A builder returning None
+    (or an empty list) does not own the input -- dispatch falls through
+    to the next one. A builder raising ValueError owns the input but
+    failed: its message becomes a single error Step, with no fallback.
+    Unexpected exceptions fall through to the next builder. The legacy
     ``generate_steps_structured`` fallback always runs last.
 
     Args:
         latex_input: Raw LaTeX equation or system.
-        precision: Desired numeric precision, forwarded to builders.
+        precision: Desired numeric precision, forwarded to builders
+            that accept it.
 
     Returns:
         List of structured steps.
     """
-    candidates = (
-        build_derivation_steps,
-        _extensions_try_extended,
-        _linalg_try_linalg,
-    )
-    for builder in candidates:
-        if builder is None:
-            continue
+    for builder, takes_precision in _candidate_builders():
         try:
-            try:
+            if takes_precision:
                 produced = builder(latex_input, precision)  # type: ignore[operator]
-            except TypeError:
+            else:
                 produced = builder(latex_input)  # type: ignore[operator]
+        except ValueError as exc:
+            return [_error_step(str(exc))]
         except Exception:
             continue
         if produced is None:
@@ -194,151 +225,6 @@ def _get_structured_steps(latex_input: str, precision: int = 15) -> list[Step]:
         if normalized is not None:
             return normalized
     return generate_steps_structured(latex_input, precision)
-
-
-def _recompute_numeric_latex(raw_input: str, precision: int) -> str | None:
-    """Recompute the numeric approximation line with the given precision.
-
-    Mirrors ``engine.generate_solution_steps`` solving flow but formats
-    numerics with ``evalf(precision)`` so ``--precision`` visibly affects
-    irrational results. Returns None when recomputation is impossible.
-    """
-    if (
-        _latex_to_sympy is None
-        or _numeric_approx is None
-        or _solve_single is None
-        or _split_into_equations is None
-        or Eq is None
-        or _sympy_simplify is None
-        or _sympy_latex is None
-    ):
-        return None
-    try:
-        if r"\begin{cases}" in raw_input:
-            match = re.search(
-                r"\\begin\{cases\}(.*)\\end\{cases\}", raw_input, re.DOTALL
-            )
-            if match:
-                inner = match.group(1)
-                raw_eqs = [
-                    line.strip() for line in re.split(r"\\\\", inner) if line.strip()
-                ]
-            else:
-                raw_eqs = []
-        else:
-            raw_eqs = _split_into_equations(raw_input)
-        if not raw_eqs:
-            return None
-        sympy_eqs = [_latex_to_sympy(eq) for eq in raw_eqs]
-        simplified = []
-        for eq in sympy_eqs:
-            if isinstance(eq, Eq):
-                lhs = _sympy_simplify(eq.lhs)
-                rhs = _sympy_simplify(eq.rhs)
-                simplified.append(Eq(lhs, rhs))
-            else:
-                simplified.append(_sympy_simplify(eq))
-        if len(simplified) == 1:
-            symbols, solutions = _solve_single(simplified[0])
-        else:
-            import sympy
-
-            eq_list = [e if isinstance(e, Eq) else Eq(e, 0) for e in simplified]
-            symbols = sorted(
-                {s for eq in eq_list for s in eq.free_symbols}, key=lambda x: str(x)
-            )
-            solutions_raw = sympy.solve(eq_list, symbols, dict=True)
-            if not solutions_raw:
-                return None
-            solutions = []
-            for s in symbols:
-                vals = [sol_dict.get(s) for sol_dict in solutions_raw]
-                solutions.append(vals if len(vals) > 1 else vals[0])
-        numeric_parts = []
-        for s, sol in zip(symbols, solutions):
-            if isinstance(sol, (list, tuple)):
-                for single in sol:
-                    numeric_parts.append(
-                        f"{_sympy_latex(s)} \\approx {_sympy_latex(_numeric_approx(single, precision))}"
-                    )
-            else:
-                numeric_parts.append(
-                    f"{_sympy_latex(s)} \\approx {_sympy_latex(_numeric_approx(sol, precision))}"
-                )
-        return r",\; ".join(numeric_parts)
-    except Exception:
-        return None
-
-
-def _apply_precision(
-    steps: list[Step], raw_input: str, precision: int
-) -> list[Step]:
-    """Rewrite numeric steps with the requested precision.
-
-    The legacy ``generate_steps_structured`` currently ignores precision
-    (numeric formatting stays at the engine default), so the CLI owns
-    precision handling: recompute the numeric line via SymPy with
-    ``evalf(precision)``. Extended builders already receive precision;
-    recomputation is idempotent for them.
-    """
-    numeric_indexes = [i for i, st in enumerate(steps) if st.kind == "numeric"]
-    if not numeric_indexes:
-        return steps
-    recomputed = _recompute_numeric_latex(raw_input, precision)
-    if recomputed is not None and len(numeric_indexes) == 1:
-        idx = numeric_indexes[0]
-        original = steps[idx]
-        updated = Step(kind=original.kind, title=original.title, latex=recomputed)
-        return steps[:idx] + [updated] + steps[idx + 1 :]
-    # Fallback: re-evaluate symbolic RHS fragments (real-valued only).
-    if _parse_latex is None or _sympy_latex is None:
-        return steps
-    symbolic_symbols: list[str] = []
-    symbolic_solutions: list[str] = []
-    for st in steps:
-        if st.kind != "symbolic":
-            continue
-        for part in st.latex.split(r",\;"):
-            if "=" not in part:
-                continue
-            left, right = part.split("=", 1)
-            symbolic_symbols.append(left.strip())
-            symbolic_solutions.append(right.strip())
-    if not symbolic_solutions:
-        return steps
-    rebuilt_steps = list(steps)
-    solution_cursor = 0
-    for idx in numeric_indexes:
-        st = rebuilt_steps[idx]
-        fragments = st.latex.split(r",\;")
-        rebuilt_fragments: list[str] = []
-        for frag in fragments:
-            if r"\approx" not in frag:
-                rebuilt_fragments.append(frag.strip())
-                continue
-            if solution_cursor >= len(symbolic_solutions):
-                rebuilt_fragments.append(frag.strip())
-                solution_cursor += 1
-                continue
-            left, _old = frag.split(r"\approx", 1)
-            symbol_latex = left.strip()
-            solution_latex = symbolic_solutions[solution_cursor]
-            solution_cursor += 1
-            if "i" in solution_latex.lower():
-                rebuilt_fragments.append(frag.strip())
-                continue
-            try:
-                expr = _parse_latex(solution_latex)
-                approx = expr.evalf(precision)
-                rebuilt_fragments.append(
-                    f"{symbol_latex} \\approx {_sympy_latex(approx)}"
-                )
-            except Exception:
-                rebuilt_fragments.append(frag.strip())
-        rebuilt_steps[idx] = Step(
-            kind=st.kind, title=st.title, latex=r",\; ".join(rebuilt_fragments)
-        )
-    return rebuilt_steps
 
 
 def _filter_solution_only(steps: list[Step], only_solution: bool) -> list[Step]:
@@ -353,10 +239,11 @@ _LEGACY_TEXT_KINDS: tuple[str, ...] = ("input", "simplified", "symbolic", "numer
 
 
 def _filter_text_legacy(steps: list[Step]) -> list[Step]:
-    """Keep only legacy kinds so default text stays 4 lines.
+    """Keep only legacy kinds so default outputs stay 4 steps.
 
-    Extended builders add derivation/verification steps; the default text
-    format remains backward compatible (input/simplified/symbolic/numeric).
+    Extended builders add derivation/verification steps; the default
+    text/json/latex formats remain backward compatible
+    (input/simplified/symbolic/numeric) unless --full-steps is given.
     """
     filtered = [s for s in steps if s.kind in _LEGACY_TEXT_KINDS]
     return filtered if filtered else steps
@@ -392,7 +279,7 @@ def main() -> None:
         sys.exit(1)
 
     steps = _get_structured_steps(raw_input, args.precision)
-    steps = _apply_precision(steps, raw_input, args.precision)
+    steps = apply_precision(steps, raw_input, args.precision)
 
     is_error = any(st.kind == "error" for st in steps)
 
@@ -405,15 +292,19 @@ def main() -> None:
                 "input": raw_input,
                 "steps": steps_to_json(steps),
                 "error": message,
+                "version": "v2",
             }
             print(json.dumps(payload, ensure_ascii=False))
             sys.stderr.write(f"Error: {message}\n")
             sys.exit(2)
         display_steps = _filter_solution_only(steps, args.only_solution)
+        if not args.full_steps:
+            display_steps = _filter_text_legacy(display_steps)
         payload = {
             "input": raw_input,
             "steps": steps_to_json(display_steps),
             "error": None,
+            "version": "v2",
         }
         print(json.dumps(payload, ensure_ascii=False))
         return
@@ -427,13 +318,18 @@ def main() -> None:
 
     if args.format == "latex":
         display_steps = _filter_solution_only(steps, args.only_solution)
+        if not args.full_steps:
+            display_steps = _filter_text_legacy(display_steps)
         for step in display_steps:
             print(f"\\[{step.latex}\\]")
         return
 
-    display_steps = _filter_solution_only(
-        _filter_text_legacy(steps), args.only_solution
-    )
+    if args.full_steps:
+        display_steps = _filter_solution_only(steps, args.only_solution)
+    else:
+        display_steps = _filter_solution_only(
+            _filter_text_legacy(steps), args.only_solution
+        )
     for step in display_steps:
         print(step.latex)
 

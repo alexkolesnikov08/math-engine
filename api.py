@@ -9,40 +9,41 @@ Endpoints:
 from __future__ import annotations
 
 import importlib
+import sys
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from steps import generate_steps_structured, steps_to_json
+from precision import apply_precision
+from steps import Step, generate_steps_structured, steps_to_json
 
 app = FastAPI(title="math-engine API")
 
 _STATIC_INDEX = Path(__file__).resolve().parent / "static" / "index.html"
 
-# Candidate optional modules that may provide richer step builders.
-# They are owned by parallel workstreams; absence is normal.
-_OPTIONAL_BUILDER_MODULES: tuple[str, ...] = (
-    "step_builders",
-    "extensions",
-    "linalg",
-)
+# Explicit per-builder call contracts in dispatch order: attribute name
+# mapped to whether it accepts (latex, precision). step_builders owns a
+# single-argument builder by contract; the rest take precision.
+_BUILDER_SPECS: dict[str, tuple[tuple[str, bool], ...]] = {
+    "step_builders": (("build_derivation_steps", False),),
+    "extensions": (("try_extended_solve", True),),
+    "linalg": (("try_linalg_solve", True),),
+}
 
-# Candidate builder function names probed inside optional modules.
-_OPTIONAL_BUILDER_ATTRS: tuple[str, ...] = (
-    "build_derivation_steps",
-    "try_extended_solve",
-    "try_linalg_solve",
-    "generate_steps_structured",
-)
+_LEGACY_KINDS: tuple[str, ...] = ("input", "simplified", "symbolic", "numeric")
 
 
 class SolveRequest(BaseModel):
     """Request body for POST /solve."""
 
     latex: str = Field(description="LaTeX equation or system to solve.")
-    precision: int = Field(default=15, description="Numeric precision.")
+    precision: int = Field(default=15, ge=1, le=50, description="Numeric precision.")
+    verbose: bool = Field(
+        default=False,
+        description="Return full derivation steps instead of the legacy 4.",
+    )
 
 
 class StepModel(BaseModel):
@@ -59,14 +60,13 @@ class SolveResponse(BaseModel):
     input: str
     steps: list[StepModel]
     error: str | None = None
+    version: str = "v2"
 
 
-def _call_with_precision(fn: Any, latex: str, precision: int) -> Any:
-    """Call a builder preferring (latex, precision), falling back to (latex)."""
-    try:
-        return fn(latex, precision)
-    except TypeError:
-        return fn(latex)
+def _error_step(message: str) -> Step:
+    """Build an error step owning a builder's ValueError message."""
+    text = message.strip() or "Unknown error."
+    return Step(kind="error", title="Error", latex=rf"\text{{Error:}} \text{{{text}}}")
 
 
 def _build_steps(latex: str, precision: int) -> Any:
@@ -76,27 +76,43 @@ def _build_steps(latex: str, precision: int) -> Any:
     first (same dispatch order as the CLI), falling back to
     :func:`steps.generate_steps_structured` when they are absent.
 
-    Never creates those modules; missing imports are silently skipped.
+    A builder returning None (or an empty list) does not own the input --
+    dispatch falls through to the next one. A builder raising ValueError
+    owns the input but failed: its message becomes a single error Step,
+    with no fallback. Missing modules are silently skipped; modules that
+    fail to import for another reason emit a stderr warning.
     """
-    for module_name in _OPTIONAL_BUILDER_MODULES:
+    for module_name, specs in _BUILDER_SPECS.items():
         try:
             module = importlib.import_module(module_name)
         except ImportError:
             continue
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - warn instead of silent skip
+            print(
+                f"Warning: optional builder module {module_name!r} "
+                f"failed to import: {exc}",
+                file=sys.stderr,
+            )
             continue
-        for attr in _OPTIONAL_BUILDER_ATTRS:
+        for attr, takes_precision in specs:
             fn = getattr(module, attr, None)
             if not callable(fn):
                 continue
             try:
-                result = _call_with_precision(fn, latex, precision)
+                if takes_precision:
+                    result = fn(latex, precision)
+                else:
+                    result = fn(latex)
+            except ValueError as exc:
+                return [_error_step(str(exc))]
             except Exception:
                 # Optional builder failed; try next candidate.
                 continue
-            if result is not None:
-                return result
-            break
+            if result is None:
+                continue
+            if isinstance(result, (list, tuple)) and len(result) == 0:
+                continue
+            return result
     return generate_steps_structured(latex, precision)
 
 
@@ -124,9 +140,10 @@ def _steps_to_payload(steps: Any) -> list[dict]:
 
 
 def _extract_error(payload: list[dict]) -> str | None:
-    """Return the error message when payload is a single error step."""
-    if len(payload) == 1 and payload[0].get("kind") == "error":
-        return payload[0].get("latex") or "Unknown error."
+    """Return the error message when any step reports kind == error."""
+    for step in payload:
+        if isinstance(step, dict) and step.get("kind") == "error":
+            return step.get("latex") or "Unknown error."
     return None
 
 
@@ -156,12 +173,27 @@ def solve(request: SolveRequest) -> JSONResponse | dict:
                 "input": request.latex,
                 "steps": [],
                 "error": f"Internal error: {exc}",
+                "version": "v2",
             },
         )
+    if (
+        isinstance(steps, list)
+        and steps
+        and all(isinstance(item, Step) for item in steps)
+    ):
+        steps = apply_precision(steps, request.latex, request.precision)
     try:
         payload = _steps_to_payload(steps)
         error = _extract_error(payload)
-        return {"input": request.latex, "steps": payload, "error": error}
+        if error is None and not request.verbose:
+            filtered = [s for s in payload if s.get("kind") in _LEGACY_KINDS]
+            payload = filtered if filtered else payload
+        return {
+            "input": request.latex,
+            "steps": payload,
+            "error": error,
+            "version": "v2",
+        }
     except Exception as exc:  # noqa: BLE001 - serialization must not leak 500 HTML
         return JSONResponse(
             status_code=500,
@@ -169,5 +201,6 @@ def solve(request: SolveRequest) -> JSONResponse | dict:
                 "input": request.latex,
                 "steps": [],
                 "error": f"Internal error: {exc}",
+                "version": "v2",
             },
         )
