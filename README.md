@@ -15,8 +15,8 @@ A compact Python utility that parses mathematical equations written in LaTeX, so
 1. **Clone the repository**:
 
    ```bash
-   git clone https://github.com/alexkolesnikov08/Math
-   cd Math
+   git clone https://github.com/alexkolesnikov08/math-engine
+   cd math-engine
    ```
 
 2. **Install dependencies**:
@@ -76,11 +76,18 @@ Each returned string is a LaTeX math fragment. Wrap it in `$$...$$` (display) or
 ## Project Structure
 
 ```
-Math/
+math-engine/
 ├── engine.py         # Core solving logic (importable)
-├── main.py           # CLI entry point
-├── README.md         # This file
-├── documentation.md  # Full API reference
+├── steps.py           # Structured steps API (Step dataclass)
+├── parsing.py         # Robust LaTeX parsing
+├── step_builders.py   # Honest derivation steps
+├── extensions.py      # Expressions, inequalities, calculus
+├── linalg.py          # Matrices and linear systems
+├── api.py             # FastAPI service
+├── main.py            # CLI entry point
+├── static/            # KaTeX preview page
+├── README.md          # This file
+├── documentation.md   # Full API reference
 ├── requirements.txt  # Python dependencies
 └── LICENSE           # MIT License
 ```

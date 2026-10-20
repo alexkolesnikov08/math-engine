@@ -24,7 +24,7 @@ server = [
 
 # Flat layout: top-level modules; never package tests/.
 [tool.setuptools]
-py-modules = ["engine", "main", "steps"]
+py-modules = ["engine", "main", "steps", "parsing", "step_builders", "extensions", "linalg", "api"]
 
 [tool.setuptools.packages.find]
 exclude = ["tests*"]
