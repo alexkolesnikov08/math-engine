@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
 from engine import generate_solution_steps
 
 
@@ -129,7 +127,6 @@ def test_empty_input():
     assert r"\text{Error:}" in error_block or "Error" in error_block
 
 
-@pytest.mark.xfail(reason="SymPy LaTeX parser does not support \\sin")
 def test_trigonometric():
     latex_input = r"sin(x) = 1"
     steps = generate_solution_steps(latex_input)
@@ -148,3 +145,52 @@ def test_fraction():
 
     symbolic = _strip_latex_spaces(steps[2])
     assert "6" in symbolic
+
+
+def test_underdetermined_single_equation_returns_error():
+    latex_input = r"x + y = 1"
+    steps = generate_solution_steps(latex_input)
+
+    assert isinstance(steps, list)
+    assert len(steps) == 1
+
+    error_block = steps[0]
+    assert r"\text{Error:}" in error_block or "Error" in error_block
+    assert "None" not in error_block
+
+
+def test_underdetermined_system_returns_error():
+    latex_input = "x + y + z = 1; x - y = 2"
+    steps = generate_solution_steps(latex_input)
+
+    assert isinstance(steps, list)
+    assert len(steps) == 1
+
+    error_block = steps[0]
+    assert r"\text{Error:}" in error_block or "Error" in error_block
+    assert "None" not in error_block
+
+
+def test_duplicate_solutions_deduplicated():
+    latex_input = r"x^2 = 4; y = 1; z = 2"
+    steps = generate_solution_steps(latex_input)
+
+    assert len(steps) == 4
+
+    symbolic = _strip_latex_spaces(steps[2])
+    assert symbolic.count("y=1") == 1
+
+    numeric = _strip_latex_spaces(steps[3])
+    assert numeric.count("y\\approx1.") == 1
+
+
+def test_pi_is_constant_not_unknown():
+    latex_input = r"x - \pi = 0"
+    steps = generate_solution_steps(latex_input)
+
+    assert len(steps) == 4
+
+    symbolic = _strip_latex_spaces(steps[2]).lower()
+    assert "x=" in symbolic
+    assert "pi" in symbolic
+    assert "none" not in symbolic

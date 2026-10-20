@@ -25,6 +25,7 @@ from typing import List, Tuple, Union, cast
 
 import sympy
 from sympy import Eq, Symbol
+from sympy.core.relational import Relational
 from sympy.parsing.latex import parse_latex
 from sympy.printing.latex import latex
 
@@ -55,6 +56,36 @@ def _split_into_equations(latex_str: str) -> List[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def _with_true_pi(expr: sympy.Basic) -> sympy.Basic:
+    """Map the parser's ``Symbol('pi')`` to the true constant ``sympy.pi``.
+
+    The SymPy LaTeX parser yields a plain symbol for ``\\pi``; without this
+    mapping ``pi`` would be treated as an unknown and solved for.
+    """
+    try:
+        return expr.xreplace({Symbol("pi"): sympy.pi})
+    except Exception:
+        return expr
+
+
+def _reject_non_equation(result: sympy.Basic, source: str) -> None:
+    """Reject parsed relationals that are not equations.
+
+    Args:
+        result: Parsed SymPy object for one input fragment.
+        source: Original LaTeX fragment (used in the error message).
+
+    Raises:
+        ValueError: If ``result`` is an inequality or another non-``Eq``
+            relational; only equations (and plain expressions) are solved.
+    """
+    if isinstance(result, Relational) and not isinstance(result, Eq):
+        raise ValueError(
+            f"Only equations are supported, "
+            f"got {type(result).__name__}: {source!r}."
+        )
+
+
 def _latex_to_sympy(eq_latex: str) -> sympy.Basic:
     """Convert a single LaTeX equation/expression to a SymPy object.
 
@@ -62,11 +93,58 @@ def _latex_to_sympy(eq_latex: str) -> sympy.Basic:
     parsed separately and combined into a ``sympy.Eq`` instance.  Otherwise the
     expression is parsed as a plain SymPy expression.
 
+    Parsing is delegated to ``parsing.parse_latex_equations`` when that
+    module is available (it normalises bare ``sin``/``pi`` spellings and
+    reports malformed sides as ``ValueError``); otherwise the legacy
+    implementation in :func:`_parse_single_latex` is used as a fallback.
+    The ``cases`` environment is left to the caller
+    (``generate_solution_steps`` splits it beforehand), so it always takes
+    the legacy path here.
+
     Args:
         eq_latex: LaTeX representing an equation or an expression.
 
     Returns:
         ``sympy.Eq`` for equations, otherwise a ``sympy.Expr``.
+
+    Raises:
+        ValueError: If the fragment uses an unsupported operator (``==``),
+            holds several equations, parses to a non-equation relational,
+            or cannot be parsed at all.
+    """
+    if "==" in eq_latex:
+        raise ValueError(
+            f"Unsupported operator '==' in fragment: {eq_latex!r}."
+        )
+    if r"\begin{cases}" not in eq_latex:
+        try:
+            from parsing import (  # noqa: PLC0415 (optional layer, may be absent)
+                parse_latex_equations,
+            )
+        except ImportError:
+            parse_latex_equations = None  # type: ignore[assignment]
+        if parse_latex_equations is not None:
+            parsed = parse_latex_equations(eq_latex)
+            if len(parsed) != 1:
+                raise ValueError(
+                    f"Expected a single equation, "
+                    f"got {len(parsed)}: {eq_latex!r}."
+                )
+            result = parsed[0]
+            _reject_non_equation(result, eq_latex)
+            return result
+    result = _parse_single_latex(eq_latex)
+    _reject_non_equation(result, eq_latex)
+    return result
+
+
+def _parse_single_latex(eq_latex: str) -> sympy.Basic:
+    """Legacy single-equation LaTeX parser.
+
+    Used as a fallback when the ``parsing`` module is unavailable and for
+    ``cases`` blocks.  Mirrors the original ``_latex_to_sympy`` behaviour:
+    split at the first top-level ``=`` outside braces, parse both sides,
+    and map ``Symbol('pi')`` to the true constant.
     """
     # Detect top‑level equality.  We avoid splitting on ``=`` inside
     # LaTeX commands (e.g. ``\\frac{a=b}{c}``) by using a simple heuristic:
@@ -95,35 +173,136 @@ def _latex_to_sympy(eq_latex: str) -> sympy.Basic:
         rhs = parse_latex(right)
         if lhs is None or rhs is None:
             raise ValueError(f"Cannot parse LaTeX fragment: {eq_latex}")
-        return Eq(lhs, rhs)
+        return _with_true_pi(Eq(lhs, rhs))
     else:
         result = parse_latex(eq_latex)
         if result is None:
             raise ValueError(f"Cannot parse LaTeX: {eq_latex}")
-        return result
+        return _with_true_pi(result)
+
+
+# Mathematical constants that must never be treated as unknowns, even if a
+# parser represents them as plain symbols.
+_KNOWN_CONSTANTS = (sympy.pi, sympy.E, sympy.oo)
+
+
+def _is_known_constant(symbol: sympy.Basic) -> bool:
+    """Check whether a free symbol is actually a mathematical constant.
+
+    The SymPy LaTeX parser yields ``Symbol('pi')`` for ``\\pi`` instead of
+    the true constant, so that name is excluded explicitly in addition to
+    ``is_constant()`` and the known constant singletons.
+    """
+    if symbol in _KNOWN_CONSTANTS:
+        return True
+    if isinstance(symbol, Symbol) and str(symbol) == "pi":
+        return True
+    try:
+        return bool(symbol.is_constant())
+    except Exception:
+        return False
+
+
+def _unknown_symbols(symbols) -> List[Symbol]:
+    """Filter mathematical constants out of ``symbols`` and sort by name."""
+    return sorted(
+        (s for s in symbols if not _is_known_constant(s)), key=lambda x: str(x)
+    )
+
+
+def _values_equal(first: sympy.Basic, second: sympy.Basic) -> bool:
+    """Decide whether two solution values represent the same number.
+
+    Uses mathematical equality (``equals``) with a structural fallback, so
+    values such as ``1`` and ``1.0`` or ``sqrt(2)**2`` and ``2`` deduplicate.
+    An undecided ``equals`` (``None``) falls through to ``==``.
+    """
+    if first is second:
+        return True
+    try:
+        decided = first.equals(second)
+    except Exception:
+        decided = None
+    if decided is True:
+        return True
+    if decided is False:
+        return False
+    try:
+        return bool(first == second)
+    except Exception:
+        return False
+
+
+def _dedupe_values(values: list) -> list:
+    """Remove duplicate solution values, preserving their order."""
+    unique: list = []
+    for value in values:
+        if not any(_values_equal(value, kept) for kept in unique):
+            unique.append(value)
+    return unique
+
+
+def _collect_symbol_values(
+    symbols: List[Symbol], solution_dicts: List[dict]
+) -> List[Union[sympy.Expr, List[sympy.Expr]]]:
+    """Collect per-symbol solutions from ``sympy.solve`` dictionaries.
+
+    Drops duplicate values, keeps a scalar for a single distinct value and
+    a list otherwise.
+
+    Raises:
+        ValueError: If a symbol is missing from a solution dict (its value
+            is ``None`` because the system is underdetermined and the
+            symbol stays free).
+    """
+    collected: List[Union[sympy.Expr, List[sympy.Expr]]] = []
+    for symbol in symbols:
+        values = [solution.get(symbol) for solution in solution_dicts]
+        if any(value is None for value in values):
+            raise ValueError(
+                f"System is underdetermined: no unique solution for {symbol}."
+            )
+        values = _dedupe_values(values)
+        collected.append(values[0] if len(values) == 1 else values)
+    return collected
+
+
+def _sanitize_error_message(message: str, max_length: int = 300) -> str:
+    """Make an exception message safe for embedding in a LaTeX block.
+
+    Collapses whitespace (so tracebacks and newlines never leak out),
+    truncates long messages, and neutralises curly braces so the text
+    cannot break out of the surrounding ``\\text{...}`` group.
+    """
+    text = " ".join(str(message).split())
+    if len(text) > max_length:
+        text = text[:max_length].rstrip() + "..."
+    return text.replace("{", "(").replace("}", ")")
 
 
 def _solve_single(
     eq: sympy.Basic,
 ) -> Tuple[List[Symbol], List[Union[sympy.Expr, List[sympy.Expr]]]]:
-    """Solve a single equation or expression for **all** free symbols at once.
+    """Solve a single equation or expression for **all** unknown symbols at once.
 
     * If ``eq`` is not an ``Eq`` we treat it as ``eq == 0``.
-    * ``sympy.solve`` is called with the full list of symbols.  For a single
-      variable it returns a list of solutions (e.g. ``[2, 3]``).  For multiple
-      variables it returns a list of dictionaries mapping each symbol to its
-      solution – we take the first dictionary.
-    * The return value mirrors the original contract: ``symbols`` is a list of the
-      symbols solved for, and ``solutions`` is a list where each entry corresponds
-      to the solution(s) for the symbol at the same index.  If a symbol has
-      several solutions the entry is a list; otherwise it is a single SymPy
-      expression.
+    * Mathematical constants (``\\pi``, ``E``, ``oo``, ...) are excluded
+      from the unknowns.
+    * ``sympy.solve`` is called with the full list of unknowns using
+      ``dict=True``.  A missing value (``None``) means the equation is
+      underdetermined and raises ``ValueError`` instead of leaking
+      ``None`` into the output; duplicate values are removed.
+    * The return value mirrors the original contract: ``symbols`` is a list of
+      the symbols solved for, and ``solutions`` is a list where each entry
+      corresponds to the solution(s) for the symbol at the same index.  If a
+      symbol has several distinct solutions the entry is a list; otherwise it
+      is a single SymPy expression.
     """
     # Ensure we work with an ``Eq``; otherwise treat expression as ``expr == 0``.
     if not isinstance(eq, Eq):
         eq = Eq(eq, 0)
 
-    symbols = sorted(eq.free_symbols, key=lambda x: str(x))
+    symbols = _unknown_symbols(eq.free_symbols)
     if not symbols:
         raise ValueError("No free symbols to solve for.")
 
@@ -134,17 +313,7 @@ def _solve_single(
     if not sol:
         raise ValueError("Equation could not be solved symbolically.")
 
-    # Collect all solutions for each symbol from the list of dictionaries.
-    # ``sol`` is a list of dicts, each dict representing one possible solution.
-    collected: List[Union[sympy.Expr, List[sympy.Expr]]] = []
-    for s in symbols:
-        # Gather the value of ``s`` from every solution dict.
-        vals = [d.get(s) for d in sol]
-        # If there is only one distinct value keep it as a scalar, otherwise keep the list.
-        if len(vals) == 1:
-            collected.append(vals[0])
-        else:
-            collected.append(vals)
+    collected = _collect_symbol_values(symbols, sol)
     return cast(List[Symbol], symbols), collected
 
 
@@ -233,16 +402,15 @@ def generate_solution_steps(latex_input: str) -> List[str]:
         else:
             # System of equations – solve simultaneously.
             eq_list = [e if isinstance(e, Eq) else Eq(e, 0) for e in simplified]
-            symbols = sorted(
-                {s for eq in eq_list for s in eq.free_symbols}, key=lambda x: str(x)
+            symbols = _unknown_symbols(
+                {s for eq in eq_list for s in eq.free_symbols}
             )
+            if not symbols:
+                raise ValueError("No free symbols to solve for.")
             solutions_raw = sympy.solve(eq_list, symbols, dict=True)
             if not solutions_raw:
                 raise ValueError("System could not be solved symbolically.")
-            solutions = []
-            for s in symbols:
-                vals = [sol_dict.get(s) for sol_dict in solutions_raw]
-                solutions.append(vals if len(vals) > 1 else vals[0])
+            solutions = _collect_symbol_values(symbols, solutions_raw)
 
         # 5. Format symbolic solutions.
         symbolic_parts = []
@@ -268,8 +436,9 @@ def generate_solution_steps(latex_input: str) -> List[str]:
                 )
         steps.append(r",\; ".join(numeric_parts))
 
-    except (ValueError, sympy.SympifyError) as exc:
-        error_msg = f"\\text{{Error:}} \\text{{{str(exc)}}}"
+    except Exception as exc:
+        detail = _sanitize_error_message(str(exc)) or "could not solve the input"
+        error_msg = f"\\text{{Error:}} \\text{{{detail}}}"
         steps = [error_msg]
 
     return steps
