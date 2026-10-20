@@ -48,6 +48,46 @@ _INEQUALITY_OPS = ("<", "<=", ">", ">=")
 
 _FINITE_DIFF_CANDIDATES = (0, 1, 2, -1)
 
+_NUMERIC_SAMPLE_CANDIDATES = (2, 0, 1, -1)
+
+
+def _is_nonfinite(value: sympy.Basic) -> bool:
+    """Return True if a SymPy value is non-finite (zoo, nan or infinity)."""
+    try:
+        if value.has(
+            sympy.zoo, sympy.nan, sympy.oo, sympy.S.NegativeInfinity
+        ):
+            return True
+    except Exception:
+        pass
+    try:
+        if bool(value.is_infinite):
+            return True
+    except Exception:
+        pass
+    try:
+        if bool(value.is_nan):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _limit_values_equal(
+    first: sympy.Basic, second: sympy.Basic
+) -> bool:
+    """Return True if two limit values agree (handles infinities)."""
+    try:
+        decided = first.equals(second)
+    except Exception:
+        decided = None
+    if decided is not None:
+        return bool(decided)
+    try:
+        return bool(first == second)
+    except Exception:
+        return False
+
 
 def _is_calculus(text: str) -> bool:
     """Return True if the raw LaTeX contains a calculus command."""
@@ -58,14 +98,21 @@ def _is_calculus(text: str) -> bool:
 
 def _split_fragments(text: str) -> list:
     """Split the input into equation fragments (only the count matters here)."""
-    if _PARSING_AVAILABLE:
-        items = parse_latex_equations(normalize_latex(text))
-        if isinstance(items, (list, tuple)):
-            return list(items)
-        return [items]
-    from engine import _split_into_equations
+    try:
+        if _PARSING_AVAILABLE:
+            items = parse_latex_equations(normalize_latex(text))
+            if isinstance(items, (list, tuple)):
+                return list(items)
+            return [items]
+        from engine import _split_into_equations
 
-    return _split_into_equations(text)
+        return _split_into_equations(text)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot split input into fragments: {exc}"
+        ) from exc
 
 
 def _parse_single(text: str) -> sympy.Basic | None:
@@ -150,27 +197,40 @@ def _numeric_sample(expr: sympy.Basic, precision: int) -> Step | None:
     """Build a numeric demonstration step, or None when ambiguous.
 
     Constant expressions are evaluated directly; single-variable ones are
-    sampled at ``2``; multi-variable expressions are ambiguous, so the step
-    is skipped.
+    sampled at ``2`` unless that point is a pole (non-finite substitution),
+    in which case ``0``, ``1`` and ``-1`` are tried in order. When every
+    candidate is non-finite the step is skipped. Multi-variable expressions
+    are ambiguous, so the step is skipped.
     """
     try:
         symbols = _sorted_symbols(expr)
         if not symbols:
+            value = expr.evalf(precision)
+            if _is_nonfinite(value):
+                return None
             return Step(
                 kind="numeric",
                 title="Numerical value",
-                latex=latex(expr.evalf(precision)),
+                latex=latex(value),
             )
         if len(symbols) > 1:
             return None
         var = symbols[0]
-        value = expr.subs(var, 2).evalf(precision)
-        return Step(
-            kind="numeric",
-            title="Numerical sample",
-            latex=f"{latex(var)} = 2 \\Rightarrow "
-            f"{latex(expr)} = {latex(value)}",
-        )
+        for cand in _NUMERIC_SAMPLE_CANDIDATES:
+            try:
+                point = sympy.sympify(cand)
+                value = expr.subs(var, point).evalf(precision)
+            except Exception:
+                continue
+            if _is_nonfinite(value):
+                continue
+            return Step(
+                kind="numeric",
+                title="Numerical sample",
+                latex=f"{latex(var)} = {latex(point)} \\Rightarrow "
+                f"{latex(expr)} = {latex(value)}",
+            )
+        return None
     except Exception as exc:
         raise ValueError(f"Cannot evaluate expression numerically: {exc}") from exc
 
@@ -185,6 +245,9 @@ def _expression_steps(
         expanded = sympy.expand(expr)
     except Exception as exc:
         raise ValueError(f"Cannot process expression: {exc}") from exc
+    for candidate in (simplified, factored, expanded):
+        if _is_nonfinite(candidate):
+            raise ValueError(f"Expression is not finite: {raw}")
     steps = [
         Step(kind="input", title="Input", latex=raw),
         Step(kind="simplified", title="Simplified form", latex=latex(simplified)),
@@ -307,7 +370,7 @@ def _derivative_check(
             continue
     try:
         alt = sympy.Derivative(sympy.expand(expr), var).doit()
-        if sympy.simplify(alt - result) == 0:
+        if bool(sympy.simplify(alt - result).equals(0)):
             return Step(
                 kind="verification",
                 title="Verification",
@@ -369,7 +432,7 @@ def _integral_steps(
             check = sympy.simplify(back - integrand)
         except Exception as exc:
             raise ValueError(f"Cannot verify integral: {exc}") from exc
-        if check != 0:
+        if not bool(check.equals(0)):
             raise ValueError("Integral verification failed.")
         return [
             Step(kind="input", title="Input", latex=raw),
@@ -397,7 +460,7 @@ def _integral_steps(
         raise
     except Exception as exc:
         raise ValueError(f"Cannot verify definite integral: {exc}") from exc
-    if check != 0:
+    if not bool(check.equals(0)):
         raise ValueError("Definite integral verification failed.")
     return [
         Step(kind="input", title="Input", latex=raw),
@@ -456,19 +519,37 @@ def _limit_steps(raw: str, node: sympy.Limit, precision: int) -> list[Step]:
     if isinstance(result, sympy.Limit) or result.has(sympy.Limit):
         raise ValueError("Limit could not be evaluated symbolically.")
 
-    parts: list[str] = []
-    if str(direction) not in ("+", "-"):
+    two_sided = str(direction) not in ("+", "-")
+    one_sided_values: dict[str, sympy.Basic] = {}
+    if two_sided:
         for side in ("+", "-"):
             try:
                 one_sided = sympy.Limit(func, var, point, dir=side).doit()
             except Exception:
                 continue
-            if isinstance(one_sided, sympy.Limit) or one_sided.has(sympy.Limit):
+            if isinstance(one_sided, sympy.Limit) or one_sided.has(
+                sympy.Limit
+            ):
                 continue
-            parts.append(
-                f"\\lim_{{{latex(var)} \\to {latex(point)}^{side}}}"
-                f" {latex(func)} = {latex(one_sided)}"
+            one_sided_values[side] = one_sided
+        if len(one_sided_values) == 2 and not _limit_values_equal(
+            one_sided_values["+"], one_sided_values["-"]
+        ):
+            raise ValueError(
+                f"Two-sided limit does not exist: {raw}"
             )
+        if result.has(sympy.zoo, sympy.nan):
+            raise ValueError(f"Two-sided limit does not exist: {raw}")
+
+    parts: list[str] = []
+    if two_sided:
+        for side in ("+", "-"):
+            if side in one_sided_values:
+                one_sided = one_sided_values[side]
+                parts.append(
+                    f"\\lim_{{{latex(var)} \\to {latex(point)}^{side}}}"
+                    f" {latex(func)} = {latex(one_sided)}"
+                )
     for probe, value in _limit_probes(func, var, point, precision):
         parts.append(
             f"{latex(var)} = {latex(probe)} \\Rightarrow {latex(value)}"

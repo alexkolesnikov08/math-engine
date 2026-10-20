@@ -342,7 +342,11 @@ def _build_system(raw: str, equations: list[sympy.Basic]) -> list[Step] | None:
         return None
     solution = {expressed: expressed_value, other: other_value}
     for eq in eqs:
-        if sympy.simplify(eq.lhs.subs(solution) - eq.rhs.subs(solution)) != 0:
+        if not bool(
+            sympy.simplify(
+                eq.lhs.subs(solution) - eq.rhs.subs(solution)
+            ).equals(0)
+        ):
             return None
 
     display_sub = Eq(
@@ -487,16 +491,20 @@ def build_derivation_steps(latex_input: str) -> list[Step] | None:
             equation = equations[0]
             if not isinstance(equation, Eq):
                 equation = Eq(equation, 0)
+            resolved = _single_var_poly(equation)
+            if resolved is not None:
+                degree = resolved[1].degree()
+                if degree == 2:
+                    return _build_quadratic(raw, equation)
+                if degree == 1:
+                    if _contains_frac(raw):
+                        fraction = _build_fraction(raw, equation)
+                        if fraction is not None:
+                            return fraction
+                    return _build_linear(raw, equation)
+                return None
             if _contains_frac(raw):
                 return _build_fraction(raw, equation)
-            resolved = _single_var_poly(equation)
-            if resolved is None:
-                return None
-            degree = resolved[1].degree()
-            if degree == 2:
-                return _build_quadratic(raw, equation)
-            if degree == 1:
-                return _build_linear(raw, equation)
             return None
         if len(equations) == 2:
             return _build_system(raw, equations)

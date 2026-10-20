@@ -101,3 +101,20 @@ def test_unsupported_input_returns_none():
     assert build_derivation_steps("hello world") is None  # unparseable
     assert build_derivation_steps("") is None  # empty
     assert build_derivation_steps("   ") is None  # whitespace only
+
+
+def test_fraction_quadratic_uses_quadratic_derivation():
+    steps = build_derivation_steps(r"\frac{x^2}{2}=2")
+    assert steps is not None
+    _check_shape(steps)
+
+    flat = "\n".join(step.latex for step in steps)
+    assert "D" in flat  # discriminant step: quadratic path, not fraction
+
+    symbolic = next(step for step in steps if step.kind == "symbolic")
+    compact_symbolic = _compact(symbolic.latex)
+    assert "x=-2" in compact_symbolic
+    assert "x=2" in compact_symbolic
+
+    verifications = [step for step in steps if step.kind == "verification"]
+    assert len(verifications) == 2  # one check per root

@@ -6,7 +6,9 @@ import re
 
 import pytest
 
-from extensions import try_extended_solve
+import sympy
+
+from extensions import _numeric_sample, try_extended_solve
 
 
 def _norm(latex: str) -> str:
@@ -137,3 +139,40 @@ def test_never_returns_error_step():
         steps = try_extended_solve(latex_input)
         assert steps is not None
         assert all(s.kind != "error" for s in steps)
+
+
+def test_expression_nonfinite_raises_value_error():
+    for bad in (r"1/0", r"\frac{1}{0}", r"0/0", r"\frac{0}{0}", r"\infty"):
+        with pytest.raises(ValueError):
+            try_extended_solve(bad)
+
+
+def test_numeric_sample_avoids_pole():
+    steps = try_extended_solve(r"\frac{1}{x-2}")
+    assert steps is not None
+    numeric = _by_kind(steps, "numeric")
+    assert len(numeric) == 1
+    assert r"\tilde" not in numeric[0].latex
+    assert "x=0" in _norm(numeric[0].latex)
+
+
+def test_numeric_sample_skipped_when_all_candidates_are_poles():
+    x = sympy.Symbol("x")
+    expr = 1 / ((x - 2) * x * (x - 1) * (x + 1))
+    assert _numeric_sample(expr, 15) is None
+
+
+def test_two_sided_limit_with_unequal_sides_raises():
+    with pytest.raises(ValueError, match="Two-sided limit does not exist"):
+        try_extended_solve(r"\lim_{x \to 0} \frac{1}{x}")
+
+
+def test_complex_inequality_never_leaks_raw_type_error():
+    try:
+        result = try_extended_solve(r"\sqrt{-1} < 0")
+    except ValueError:
+        pass
+    except TypeError as exc:
+        pytest.fail(f"raw TypeError escaped the contract: {exc}")
+    else:
+        assert result is None
