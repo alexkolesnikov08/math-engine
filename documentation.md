@@ -61,8 +61,13 @@ Output (each line is a LaTeX math fragment):
 x^2 - 5x + 6 = 0
 x^{2} - 5 x + 6 = 0
 x = 2,\; x = 3
-x \approx 2.00000000000000,\; x \approx 3.00000000000000
+x \approx 2.0,\; x \approx 3.0
 ```
+
+Numeric values use SymPy `evalf` with the engine default precision of 3
+significant digits (hence `2.0`, not `2.00000000000000`). See
+[Precision defaults](#precision-defaults) for how the CLI/API layers
+override this.
 
 To render in a LaTeX document, wrap each fragment:
 
@@ -87,8 +92,13 @@ Or inline: `\(x = 2,\; x = 3\)`.
    * Single equation → `_solve_single` solves for every free symbol.
    * System → `sympy.solve` with a list of `Eq` objects, returning a dict of
      solutions.
+   * Underdetermined systems (more unknowns than independent equations)
+     raise `ValueError` instead of returning partial solutions (see
+     [Underdetermined systems](#underdetermined-systems)).
 5. **Formatting** – symbolic and numeric results are turned back into LaTeX
-   using `sympy.printing.latex.latex`.
+   using `sympy.printing.latex.latex`. Numerics go through
+   `_numeric_approx` (`evalf` with the engine default precision of 3 —
+   see [Precision defaults](#precision-defaults)).
 6. **Error handling** – any exception is caught and converted into a user‑friendly
    LaTeX error block.
 
@@ -108,9 +118,64 @@ web services, notebooks, or other applications.
 ## Dependencies
 
 - **Python 3.10+**
-- **SymPy** – symbolic mathematics library (`pip install sympy`)
+- **SymPy** – symbolic mathematics library; plus `antlr4-python3-runtime==4.11.*` (see `pyproject.toml` `[project] dependencies`)
+- **Dev extras** (`pytest`, `ruff`) and **server extras** (`fastapi`, `uvicorn`, `httpx`) live in `pyproject.toml` `[project.optional-dependencies]`
 
-See [`requirements.txt`](requirements.txt) for pinned versions.
+Install with `uv sync` (add `--extra dev --extra server` as needed); `requirements.txt` is a pip fallback that re-exports the project.
+
+---
+
+## Precision defaults
+
+This documents the current code as a matter of fact. Three layers each have
+their own default today:
+
+| Layer | Default | Behaviour |
+|-------|---------|-----------|
+| `engine._numeric_approx` | `precision: int = 3` | `solution.evalf(3)`; this is what plain `generate_solution_steps` produces. |
+| `steps.generate_steps_structured` | `precision: int = 15` | Accepted for forward compatibility but currently ignored (numeric formatting still comes from the engine default). |
+| CLI `main.py` / API `api.py` | `--precision 15` / `precision: int = 15` | Precision is applied afterwards via `precision.apply_precision` (recomputing the numeric line with `evalf(precision)`), so `--precision` visibly affects CLI/API output only. Values `< 1` are rejected by the CLI with exit code 2. |
+
+Concretely, `uv run python main.py --precision 5 "x^2 - 2 = 0"` prints
+`x \approx -1.4142,\; x \approx 1.4142`, while the default
+`--precision 15` prints
+`x \approx -1.4142135623731,\; x \approx 1.4142135623731`.
+
+---
+
+## Underdetermined systems
+
+This documents the current code as a matter of fact. When there are more
+unknowns than independent equations, the engine raises an error instead of
+returning a partial solution: any symbol left without a unique value produces
+`ValueError("System is underdetermined: no unique solution for {symbol}.")`,
+surfaced as a single LaTeX error block. The CLI prints it to stderr and exits
+with code 2:
+
+```bash
+uv run python main.py 'x + y = 1'
+```
+
+```
+Error: \text{Error:} \text{System is underdetermined: no unique solution for y.}
+```
+
+(The message above goes to stderr; exit code is 2.) With `--format json` the
+same situation returns an error step plus the `error` field (still with
+`"version": "v2"`):
+
+```bash
+uv run python main.py --format json '\begin{cases} x + y + z = 1 \\ x - y = 0 \end{cases}'
+```
+
+```json
+{"input": "\\begin{cases} x + y + z = 1 \\\\ x - y = 0 \\end{cases}", "steps": [{"kind": "error", "title": "Error", "latex": "\\text{Error:} \\text{System is underdetermined: no unique solution for z.}"}], "error": "\\text{Error:} \\text{System is underdetermined: no unique solution for z.}", "version": "v2"}
+```
+
+This is pinned by
+`tests/test_engine.py::test_underdetermined_single_equation_returns_error` and
+`::test_underdetermined_system_returns_error`, which require a single error
+block with no `None` leaking into the output.
 
 ---
 
@@ -152,5 +217,8 @@ print(steps_to_json(steps))
 Success returns 4 `Step(kind, title, latex)` items in order
 `input → simplified → symbolic → numeric`; failure returns one
 `Step(kind="error", ...)`. `steps_to_json` converts steps to plain
-dicts (`kind`/`title`/`latex`) for JSON serialization.
+dicts (`kind`/`title`/`latex`) for JSON serialization. Note:
+`generate_steps_structured` accepts `precision` (default 15) for forward
+compatibility, but numeric formatting still comes from the engine default —
+see [Precision defaults](#precision-defaults).
 

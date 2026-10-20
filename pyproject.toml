@@ -5,6 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "math-equation-solver"
 version = "0.1.0"
+authors = [{name = "Alexandr Kolesnikov"}]
+license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = [
     "sympy>=1.12",
@@ -24,7 +26,7 @@ server = [
 
 # Flat layout: top-level modules; never package tests/.
 [tool.setuptools]
-py-modules = ["engine", "main", "steps", "parsing", "step_builders", "extensions", "linalg", "api"]
+py-modules = ["engine", "main", "steps", "parsing", "step_builders", "extensions", "linalg", "api", "precision"]
 
 [tool.setuptools.packages.find]
 exclude = ["tests*"]

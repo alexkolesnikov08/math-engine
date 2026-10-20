@@ -4,12 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>math-engine preview</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" integrity="sha384-43gviWU0YVjaDtb/GhzOouOXtZMP/7XUzwPTstBeZFe/+rCMvRwr4yROQP43s0Xk" crossorigin="anonymous"></script>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
     textarea { width: 100%; min-height: 72px; font-family: monospace; }
+    #offline-banner { display: none; background: #fff3cd; border: 1px solid #e0c36a; border-radius: 8px; padding: 0.75rem 1rem; margin: 0.75rem 0; }
+    #offline-banner.visible { display: block; }
     #steps .step { border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; margin: 0.75rem 0; }
     #steps .step h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
     #error { color: #a00; white-space: pre-wrap; }
@@ -18,6 +20,7 @@
 </head>
 <body>
   <h1>math-engine preview</h1>
+  <div id="offline-banner" role="alert">KaTeX CDN is unreachable (offline?) — showing plain LaTeX source instead of rendered math.</div>
   <label for="latex">LaTeX equation:</label>
   <textarea id="latex">x^2 - 5x + 6 = 0</textarea>
   <div class="row">
@@ -29,6 +32,14 @@
   <div id="steps"></div>
 
   <script>
+    function updateOfflineBanner() {
+      // KaTeX is loaded from a CDN with SRI; when offline (or when the
+      // CDN is blocked) `window.katex` stays undefined and the page falls
+      // back to plain-text LaTeX. The banner makes that state visible.
+      var offline = (typeof window.katex === 'undefined');
+      document.getElementById('offline-banner').classList.toggle('visible', offline);
+      return offline;
+    }
     async function solve() {
       const latex = document.getElementById('latex').value;
       const precision = parseInt(document.getElementById('precision').value, 10) || 15;
@@ -78,17 +89,24 @@
           ],
           throwOnError: false,
         });
-      } else {
+      } else if (window.katex) {
         // Fallback: direct KaTeX rendering if auto-render is unavailable.
         stepsBox.querySelectorAll('.math').forEach((el) => {
           const src = el.textContent.replace(/^\$\$|\$\$$/g, '');
           try { window.katex.render(src, el, { displayMode: true, throwOnError: false }); }
-          catch (e) { /* keep raw text */ }
+          catch (e) { el.textContent = src; }
+        });
+      } else {
+        // Offline (katex undefined): show plain LaTeX source, never raw $$...$$.
+        stepsBox.querySelectorAll('.math').forEach((el) => {
+          el.textContent = el.textContent.replace(/^\$\$|\$\$$/g, '');
         });
       }
+      updateOfflineBanner();
     }
     document.getElementById('solve').addEventListener('click', solve);
     window.addEventListener('load', () => {
+      updateOfflineBanner();
       if (window.katex) { /* KaTeX ready */ }
     });
   </script>
